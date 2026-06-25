@@ -11,6 +11,7 @@ dependencies:
   - ipywidgets
   - wandb
   - pip
+  - setuptools>=64
   - pip:
       - --index-url=https://download.pytorch.org/whl/cu124
       - torch==2.6.0+cu124
@@ -18,4 +19,6 @@ dependencies:
       - xformers
       - safetensors>=0.4.0
       - simple-parsing>=0.1.5
+      - transformers>=4.40.0
+      - sentencepiece>=0.1.99
       - -e .

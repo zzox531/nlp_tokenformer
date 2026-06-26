@@ -1,0 +1,4 @@
+xformers>=0.0.24
+simple-parsing>=0.1.5
+safetensors>=0.4.0
+numpy

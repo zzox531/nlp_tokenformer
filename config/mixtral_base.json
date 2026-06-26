@@ -1,0 +1,21 @@
+{
+    "dim": 2048,
+    "n_layers": 24,
+    "head_dim": 64,
+    "hidden_dim": 8192,
+    "n_heads": 32,
+    "n_kv_heads": 8,
+    "norm_eps": 1e-5,
+    "vocab_size": 32000,
+    "rope_theta": 1000000.0,
+    "moe": {
+        "num_experts": 4,
+        "num_experts_per_tok": 2
+    },
+    "tokenformer": {
+        "qkv_slots": 2816,
+        "ffn_slots": 5632,
+        "norm_activation_type": "gelu_l2_norm",
+        "layer_indices": null
+    }
+}

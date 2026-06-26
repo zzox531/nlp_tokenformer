@@ -1,0 +1,8 @@
+Metadata-Version: 2.4
+Name: mixtral-tokenformer
+Version: 0.1.0
+Requires-Python: >=3.12
+Requires-Dist: xformers>=0.0.24
+Requires-Dist: simple-parsing>=0.1.5
+Requires-Dist: safetensors>=0.4.0
+Requires-Dist: numpy

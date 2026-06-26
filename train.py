@@ -1,17 +1,24 @@
 import json
 import argparse
 from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 import torch
 import torch.nn as nn
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
+from transformers import AutoTokenizer
 
 import wandb
 
 from mistral_inference.args import TransformerArgs, TokenformerArgs
 from mistral_inference.transformer import Transformer
 from dataloader import OpenWebTextDataLoader
+from evaluate import (
+    eval_hellaswag,
+    eval_pile_perplexity,
+    eval_winogrande,
+)
 
 
 def load_args(config_path: str) -> TransformerArgs:
@@ -57,6 +64,21 @@ def main():
     parser.add_argument("--seq_len", type=int, default=512)
     parser.add_argument("--no-tokenformer", dest="no_tokenformer", action="store_true",
                         help="Disable tokenformer even if present in config")
+    parser.add_argument("--tokenizer", type=str, default="mistralai/Mistral-7B-v0.1")
+    parser.add_argument("--eval_interval", type=int, default=50,
+                        help="Run benchmarks every N steps (0 = disabled)")
+    parser.add_argument("--eval_tasks", nargs="+",
+                        choices=["pile", "hellaswag", "winogrande"],
+                        default=["pile", "hellaswag", "winogrande"],
+                        help="Benchmarks to run at each eval interval")
+    parser.add_argument("--eval_batch_size", type=int, default=16,
+                        help="Pairs per forward pass during evaluation")
+    parser.add_argument("--eval_max_samples", type=int, default=500,
+                        help="Max examples per benchmark during training eval (None = full set)")
+    parser.add_argument("--pile_data_dir", type=str, default=None,
+                        help="Pre-tokenised Pile val.bin directory (required if 'pile' in eval_tasks)")
+    parser.add_argument("--eval_pile_max_tokens", type=int, default=500_000,
+                        help="Token budget for Pile perplexity during training")
     cfg = parser.parse_args()
 
     device = torch.device("cuda")
@@ -77,6 +99,51 @@ def main():
         "tokenformer_ffn_slots": args.tokenformer.ffn_slots if args.tokenformer else None,
     })
 
+    eval_tasks = set(cfg.eval_tasks)
+    tokenizer: Optional[Any] = None
+    if cfg.eval_interval > 0:
+        print(f"Loading tokenizer for eval ({cfg.tokenizer}) ...")
+        tokenizer = AutoTokenizer.from_pretrained(cfg.tokenizer)
+
+    eval_log: List[Dict] = []
+
+    def run_eval(step: int) -> None:
+        model.eval()
+        orig_max_batch = model.args.max_batch_size
+        model.args.max_batch_size = cfg.eval_batch_size
+        metrics: Dict[str, float] = {"step": step}
+
+        with torch.no_grad():
+            if "pile" in eval_tasks:
+                metrics["pile_perplexity"] = eval_pile_perplexity(
+                    model, device, tokenizer,
+                    seq_len=cfg.seq_len,
+                    max_tokens=cfg.eval_pile_max_tokens,
+                    data_dir=cfg.pile_data_dir,
+                )
+            if "hellaswag" in eval_tasks:
+                metrics["hellaswag_accuracy"] = eval_hellaswag(
+                    model, device, tokenizer,
+                    batch_size=cfg.eval_batch_size,
+                    max_samples=cfg.eval_max_samples,
+                )
+            if "winogrande" in eval_tasks:
+                metrics["winogrande_accuracy"] = eval_winogrande(
+                    model, device, tokenizer,
+                    batch_size=cfg.eval_batch_size,
+                    max_samples=cfg.eval_max_samples,
+                )
+
+        model.args.max_batch_size = orig_max_batch
+        model.train()
+
+        wandb.log({f"eval/{k}": v for k, v in metrics.items() if k != "step"} | {"step": step})
+        print(f"  [eval step {step}] " + "  ".join(f"{k}={v:.4f}" for k, v in metrics.items() if k != "step"))
+
+        eval_log.append(metrics)
+        with open(eval_log_path, "w") as f:
+            json.dump(eval_log, f, indent=2)
+
     optimizer = AdamW(model.parameters(), lr=cfg.lr, betas=(0.9, 0.95), weight_decay=0.1)
     scheduler = CosineAnnealingLR(optimizer, T_max=cfg.max_steps)
 
@@ -85,6 +152,7 @@ def main():
 
     save_dir = Path(cfg.save_dir)
     save_dir.mkdir(exist_ok=True)
+    eval_log_path = save_dir / f"eval_log_{'tokenformer' if args.tokenformer else 'base'}.json"
 
     model.train()
     optimizer.zero_grad()
@@ -109,6 +177,9 @@ def main():
             optimizer.step()
             scheduler.step()
             optimizer.zero_grad()
+
+        if cfg.eval_interval > 0 and step % cfg.eval_interval == 0:
+            run_eval(step)
 
         if step % 50 == 0:
             train_loss = loss.item() * cfg.grad_accum_steps

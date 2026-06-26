@@ -25,4 +25,4 @@ python train.py \
     --max_steps 10000 \
     --save_dir checkpoints \
     --wandb_project mixtral-base \
-    --no_tokenformer
+    --no-tokenformer

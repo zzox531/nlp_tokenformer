@@ -9,7 +9,7 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 
 import wandb
 
-from mistral_inference.args import TransformerArgs
+from mistral_inference.args import TransformerArgs, TokenformerArgs
 from mistral_inference.transformer import Transformer
 from dataloader import OpenWebTextDataLoader
 
@@ -17,18 +17,31 @@ from dataloader import OpenWebTextDataLoader
 def load_args(config_path: str) -> TransformerArgs:
     with open(config_path) as f:
         data = json.load(f)
+    tokenformer_data = data.pop("tokenformer", None)
     args = TransformerArgs.from_dict(data)
+    if tokenformer_data is not None:
+        args.tokenformer = TokenformerArgs(**tokenformer_data)
     return args
 
 
 def build_model(args: TransformerArgs, device: torch.device) -> Transformer:
-    args.max_batch_size = 1  # set before construction
-    with torch.device("meta"):
-        model = Transformer(args)
-    # materialize all parameters on the target device
-    model = model.to_empty(device=device)
-    model = model.to(dtype=torch.bfloat16)
-    return model
+    orig_dtype = torch.get_default_dtype()
+    torch.set_default_dtype(torch.bfloat16)
+    model = Transformer(args)
+    torch.set_default_dtype(orig_dtype)
+
+    n_params = sum(p.numel() for p in model.parameters())
+    model_mem_gib = n_params * 2 / 1024**3  # bfloat16 = 2 bytes
+    gpu_free = (torch.cuda.get_device_properties(device).total_memory - torch.cuda.memory_reserved(device)) / 1024**3
+    print(f"Model params:      {n_params:,}")
+    print(f"Model memory (bf16): {model_mem_gib:.2f} GiB")
+    print(f"GPU free memory:   {gpu_free:.2f} GiB")
+    if model_mem_gib > gpu_free:
+        print("WARNING: model is too large for available GPU memory")
+    else:
+        print("OK: model should fit")
+
+    return model.to(device=device)
 
 
 def main():
@@ -42,6 +55,8 @@ def main():
     parser.add_argument("--wandb_project", type=str, default="mixtral-tokenformer")
     parser.add_argument("--data_dir", type=str, default="data/owt")
     parser.add_argument("--seq_len", type=int, default=512)
+    parser.add_argument("--no-tokenformer", dest="no_tokenformer", action="store_true",
+                        help="Disable tokenformer even if present in config")
     cfg = parser.parse_args()
 
     device = torch.device("cuda")
@@ -49,6 +64,8 @@ def main():
     wandb.init(project=cfg.wandb_project, config=vars(cfg))
 
     args = load_args(cfg.config)
+    if cfg.no_tokenformer:
+        args.tokenformer = None
     args.max_batch_size = cfg.batch_size
     model = build_model(args, device)
 
@@ -100,26 +117,21 @@ def main():
             with torch.no_grad():
                 val_inputs, val_targets = val_loader.get_batch()
                 val_flat = val_inputs.reshape(-1)
+                val_flat_targets = val_targets.reshape(-1)
                 val_seqlens = [val_inputs.shape[1]] * cfg.batch_size
                 val_logits = model(val_flat, seqlens=val_seqlens)
-                val_loss = nn.functional.cross_entropy(val_logits, val_targets.reshape(-1)).item()
+                val_loss = nn.functional.cross_entropy(val_logits, val_flat_targets).item()
+                val_acc = (val_logits.argmax(-1) == val_flat_targets).float().mean().item()
             model.train()
 
-            wandb.log({"loss": train_loss, "val_loss": val_loss, "lr": scheduler.get_last_lr()[0], "step": step})
-            print(f"step {step:>6}  loss {train_loss:.4f}  val_loss {val_loss:.4f}")
+            wandb.log({"loss": train_loss, "val_loss": val_loss, "val_acc": val_acc, "lr": scheduler.get_last_lr()[0], "step": step})
+            print(f"step {step:>6}  loss {train_loss:.4f}  val_loss {val_loss:.4f}  val_acc {val_acc:.4f}")
 
-        if step % 1000 == 0 and step > 0:
-            ckpt_path = save_dir / f"step_{step:06d}.pt"
-            torch.save({
-                "step": step,
-                "model_state_dict": model.state_dict(),
-                "optimizer_state_dict": optimizer.state_dict(),
-                "args": args,
-            }, ckpt_path)
-            # also save the config so the checkpoint is self-contained
-            with open(save_dir / "params.json", "w") as f:
-                json.dump(json.load(open(cfg.config)), f, indent=2)
-            print(f"saved checkpoint to {ckpt_path}")
+    ckpt_path = save_dir / f"model_{"tokenformer" if args.tokenformer else "base"}.pt"
+    torch.save({"step": step, "model_state_dict": model.state_dict(), "args": args}, ckpt_path)
+    with open(save_dir / f"params_{"tokenformer" if args.tokenformer else "base"}.json", "w") as f:
+        json.dump(json.load(open(cfg.config)), f, indent=2)
+    print(f"saved checkpoint to {ckpt_path}")
 
 
 if __name__ == "__main__":

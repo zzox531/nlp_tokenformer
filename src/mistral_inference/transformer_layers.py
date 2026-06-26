@@ -6,7 +6,8 @@ from torch import nn
 from xformers.ops.fmha import memory_efficient_attention  # type: ignore
 from xformers.ops.fmha.attn_bias import BlockDiagonalMask
 
-from mistral_inference.args import LoraArgs
+from mistral_inference.args import LoraArgs, TokenformerArgs
+from tokenformer.pattention import Pattention
 from mistral_inference.cache import CacheView
 from mistral_inference.lora import LoRALinear
 from mistral_inference.moe import MoeArgs, MoeLayer
@@ -36,6 +37,7 @@ class Attention(nn.Module):
         head_dim: int,
         n_kv_heads: int,
         lora: Optional[LoraArgs] = None,
+        tokenformer: Optional[TokenformerArgs] = None
     ):
         super().__init__()
 
@@ -47,11 +49,20 @@ class Attention(nn.Module):
 
         self.scale = self.head_dim**-0.5
 
-        MaybeLora = maybe_lora(lora)
-        self.wq = MaybeLora(dim, n_heads * head_dim, bias=False)
-        self.wk = MaybeLora(dim, n_kv_heads * head_dim, bias=False)
-        self.wv = MaybeLora(dim, n_kv_heads * head_dim, bias=False)
-        self.wo = MaybeLora(n_heads * head_dim, dim, bias=False)
+        if tokenformer is not None:
+            slots = tokenformer.qkv_slots
+            na   = tokenformer.norm_activation_type
+            init = nn.init.xavier_normal_
+            self.wq = Pattention(na, dim, n_heads * head_dim, slots, init, init)
+            self.wk = Pattention(na, dim, n_kv_heads * head_dim, slots, init, init)
+            self.wv = Pattention(na, dim, n_kv_heads * head_dim, slots, init, init)
+            self.wo = Pattention(na, n_heads * head_dim, dim, slots, init, init)
+        else:
+            MaybeLora = maybe_lora(lora)
+            self.wq = MaybeLora(dim, n_heads * head_dim, bias=False)
+            self.wk = MaybeLora(dim, n_kv_heads * head_dim, bias=False)
+            self.wv = MaybeLora(dim, n_kv_heads * head_dim, bias=False)
+            self.wo = MaybeLora(n_heads * head_dim, dim, bias=False)
 
     def forward(
         self,
@@ -94,13 +105,21 @@ class Attention(nn.Module):
 
 
 class FeedForward(nn.Module):
-    def __init__(self, dim: int, hidden_dim: int, lora: Optional[LoraArgs] = None):
+    def __init__(self, dim: int, hidden_dim: int, lora: Optional[LoraArgs] = None, tokenformer: Optional[TokenformerArgs] = None):
         super().__init__()
 
-        MaybeLora = maybe_lora(lora)
-        self.w1 = MaybeLora(dim, hidden_dim, bias=False)
-        self.w2 = MaybeLora(hidden_dim, dim, bias=False)
-        self.w3 = MaybeLora(dim, hidden_dim, bias=False)
+        if tokenformer is not None:
+            slots = tokenformer.ffn_slots
+            na    = tokenformer.norm_activation_type
+            init  = nn.init.xavier_normal_
+            self.w1 = Pattention(na, dim, hidden_dim, slots, init, init)
+            self.w2 = Pattention(na, hidden_dim, dim, slots, init, init)
+            self.w3 = Pattention(na, dim, hidden_dim, slots, init, init)
+        else:
+            MaybeLora = maybe_lora(lora)
+            self.w1 = MaybeLora(dim, hidden_dim, bias=False)
+            self.w2 = MaybeLora(hidden_dim, dim, bias=False)
+            self.w3 = MaybeLora(dim, hidden_dim, bias=False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.w2(nn.functional.silu(self.w1(x)) * self.w3(x))  # type: ignore
@@ -131,6 +150,7 @@ class TransformerBlock(nn.Module):
         norm_eps: float,
         lora: Optional[LoraArgs] = None,
         moe: Optional[MoeArgs] = None,
+        tokenformer: Optional[TokenformerArgs] = None,
     ):
         super().__init__()
         self.n_heads = n_heads
@@ -141,19 +161,20 @@ class TransformerBlock(nn.Module):
             head_dim=head_dim,
             n_kv_heads=n_kv_heads,
             lora=lora,
+            tokenformer=tokenformer,
         )
         self.attention_norm = RMSNorm(dim, eps=norm_eps)
         self.ffn_norm = RMSNorm(dim, eps=norm_eps)
 
         self.feed_forward: nn.Module
-        if moe is not None:
+        if moe is not None and tokenformer is None:
             self.feed_forward = MoeLayer(
                 experts=[FeedForward(dim=dim, hidden_dim=hidden_dim, lora=lora) for _ in range(moe.num_experts)],
                 gate=nn.Linear(dim, moe.num_experts, bias=False),
                 moe_args=moe,
             )
         else:
-            self.feed_forward = FeedForward(dim=dim, hidden_dim=hidden_dim, lora=lora)
+            self.feed_forward = FeedForward(dim=dim, hidden_dim=hidden_dim, lora=lora, tokenformer=tokenformer)
 
     def forward(
         self,

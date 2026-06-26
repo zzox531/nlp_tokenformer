@@ -22,8 +22,6 @@ import torch
 import torch.nn.functional as F
 import torch.nn as nn
 import numpy as np
-from pkg_resources import packaging
-from importlib.metadata import version
 
 # flags required to enable jit fusion kernels
 torch._C._jit_set_profiling_mode(False)

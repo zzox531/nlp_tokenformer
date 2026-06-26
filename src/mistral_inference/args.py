@@ -27,6 +27,13 @@ class VisionEncoderArgs:
 
 
 @dataclass
+class TokenformerArgs(Serializable):
+    qkv_slots: int
+    ffn_slots: int
+    norm_activation_type: str = "gelu_l2_norm"
+    layer_indices: Optional[List[int]] = None
+
+@dataclass
 class TransformerArgs(Serializable):
     dim: int
     n_layers: int
@@ -45,6 +52,7 @@ class TransformerArgs(Serializable):
     moe: Optional[MoeArgs] = None
     # If this is set, we will load LoRA linear layers instead of linear layers.
     lora: Optional[LoraArgs] = None
+    tokenformer: Optional[TokenformerArgs] = None
     sliding_window: Optional[int] | Optional[List[int]] = None
     _sliding_window: Optional[int] | Optional[List[int]] = None
     model_type: str = "transformer"

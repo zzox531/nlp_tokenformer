@@ -78,18 +78,16 @@ class Transformer(ModelBase, LoRALoaderMixin):
             self.norm = RMSNorm(args.dim, eps=args.norm_eps)
             self.output = nn.Linear(args.dim, args.vocab_size, bias=False)
         # Initialize all layers but slice off those not of this rank.
+        tf = args.tokenformer
         layers = [
             TransformerBlock(
-                dim=args.dim,
-                hidden_dim=args.hidden_dim,
-                n_heads=args.n_heads,
-                n_kv_heads=args.n_kv_heads,
-                head_dim=args.head_dim,
-                norm_eps=args.norm_eps,
-                lora=args.lora,
-                moe=args.moe,
+                dim=args.dim, hidden_dim=args.hidden_dim,
+                n_heads=args.n_heads, n_kv_heads=args.n_kv_heads,
+                head_dim=args.head_dim, norm_eps=args.norm_eps,
+                lora=args.lora, moe=args.moe,
+                tokenformer=tf if (tf is None or tf.layer_indices is None or i in tf.layer_indices) else None,
             )
-            for _ in range(args.n_layers)
+            for i in range(args.n_layers)
         ]
         num_layers_per_rank = math.ceil(self.n_layers / self.num_pipeline_ranks)
         offset = self.pipeline_rank * num_layers_per_rank

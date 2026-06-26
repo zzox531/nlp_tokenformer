@@ -1,9 +1,9 @@
 #!/bin/bash
-#SBATCH --partition=hpc
-#SBATCH --mem=32G
-#SBATCH --gres=gpu:titanx:1
-#SBATCH --time=00:15:00
-#SBATCH --job-name=dermlip
+#SBATCH --partition=a100
+#SBATCH --mem=64G
+#SBATCH --gres=gpu:a100:1
+#SBATCH --time=24:00:00
+#SBATCH --job-name=mixtral-tokenformer
 #SBATCH --output=logs/%j.out
 #SBATCH --error=logs/%j.err
 
@@ -14,9 +14,6 @@ export WANDB_API_KEY=<YOUR_WANDB_API_KEY>
 
 source ~/miniconda3/etc/profile.d/conda.sh
 conda activate tokenformer_entropy
-
-python dataloader.py --data_dir data/owt --split train
-python dataloader.py --data_dir data/owt --split val
 
 python train.py \
     --config config/mixtral_tokenformer.json \

@@ -18,8 +18,12 @@ from typing import Literal
 import torch
 
 
-def prepare(split: str, data_dir: str, tokenizer_name: str = "mistralai/Mistral-7B-v0.1"):
-    """Download and tokenize OpenWebText into a flat uint16 binary file."""
+def prepare(split: str, data_dir: str, tokenizer_name: str = "mistralai/Mistral-7B-v0.1", fraction: float = 0.1):
+    """Download and tokenize OpenWebText into a flat uint16 binary file.
+
+    Uses streaming mode so the raw dataset is never cached to disk — only the
+    final tokenized binary is written, keeping disk usage minimal.
+    """
     from datasets import load_dataset
     from transformers import AutoTokenizer
 
@@ -35,38 +39,37 @@ def prepare(split: str, data_dir: str, tokenizer_name: str = "mistralai/Mistral-
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
     eos = tokenizer.eos_token_id
 
-    print("Loading OpenWebText ...")
-    full = load_dataset("Skylion007/openwebtext", split="train")
+    # OpenWebText has ~8,013,769 examples total.  We stream to avoid writing
+    # the full Arrow cache (which caused the disk-quota error).
+    TOTAL_OWT = 8_013_769
+    n_total = int(TOTAL_OWT * fraction)
+    n_train = int(n_total * 0.995)
+    n_val = n_total - n_train
 
-    # 99.5 / 0.5 train-val split
-    n_train = int(len(full) * 0.995)
-    dataset = full.select(range(n_train) if split == "train" else range(n_train, len(full)))
-    print(f"  {split}: {len(dataset):,} documents")
+    print(f"Streaming OpenWebText (fraction={fraction:.3f} → {n_total:,} examples) ...")
+    stream = load_dataset("Skylion007/openwebtext", split="train", streaming=True)
 
-    def tokenize(example):
-        ids = tokenizer.encode(example["text"])
-        ids.append(eos)
-        return {"ids": ids, "len": len(ids)}
+    if split == "train":
+        dataset = stream.take(n_train)
+        n_expected = n_train
+    else:
+        dataset = stream.skip(n_train).take(n_val)
+        n_expected = n_val
 
-    print("Tokenizing ...")
-    tokenized = dataset.map(
-        tokenize,
-        remove_columns=["text"],
-        desc=f"Tokenizing {split}",
-        num_proc=max(1, (os.cpu_count() or 2) // 2),
-    )
+    print(f"  {split}: ~{n_expected:,} documents")
 
-    total = sum(tokenized["len"])
-    print(f"Total tokens ({split}): {total:,}")
+    # Tokenize and write tokens directly to the output file one document at a
+    # time so peak RAM stays small and nothing large lands in the disk cache.
+    total = 0
+    with open(out_path, "wb") as f:
+        for i, example in enumerate(dataset):
+            ids = tokenizer.encode(example["text"])
+            ids.append(eos)
+            np.array(ids, dtype=np.uint16).tofile(f)
+            total += len(ids)
+            if (i + 1) % 10_000 == 0:
+                print(f"  {i+1:,} / {n_expected:,} docs  {total:,} tokens ...")
 
-    # vocab_size=32000 fits in uint16 (max 65535)
-    arr = np.memmap(out_path, dtype=np.uint16, mode="w+", shape=(total,))
-    idx = 0
-    for example in tokenized:
-        chunk = example["ids"]
-        arr[idx : idx + len(chunk)] = chunk
-        idx += len(chunk)
-    arr.flush()
     print(f"Saved {out_path}  ({total:,} tokens, {out_path.stat().st_size / 1e9:.2f} GB)")
 
 
@@ -116,5 +119,9 @@ if __name__ == "__main__":
     parser.add_argument("--data_dir", type=str, default="data/owt")
     parser.add_argument("--split", type=str, choices=["train", "val"], default="train")
     parser.add_argument("--tokenizer", type=str, default="mistralai/Mistral-7B-v0.1")
+    parser.add_argument(
+        "--fraction", type=float, default=0.1,
+        help="Fraction of OpenWebText to use (0.0–1.0). Default 0.1 = 10%%."
+    )
     args = parser.parse_args()
-    prepare(args.split, args.data_dir, args.tokenizer)
+    prepare(args.split, args.data_dir, args.tokenizer, args.fraction)

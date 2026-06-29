@@ -17,6 +17,7 @@ from evaluate import (
     eval_hellaswag,
     eval_pile_perplexity,
     eval_winogrande,
+    eval_piqa,
 )
 
 
@@ -140,6 +141,12 @@ def main():
                 )
             if "winogrande" in eval_tasks:
                 metrics["winogrande_accuracy"] = eval_winogrande(
+                    model, device, tokenizer,
+                    batch_size=cfg.eval_batch_size,
+                    max_samples=cfg.eval_max_samples,
+                )
+            if "piqa" in eval_tasks:
+                metrics["piqa_accuracy"] = eval_piqa(
                     model, device, tokenizer,
                     batch_size=cfg.eval_batch_size,
                     max_samples=cfg.eval_max_samples,

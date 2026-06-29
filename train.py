@@ -6,14 +6,13 @@ from typing import Any, Dict, List, Optional
 import torch
 import torch.nn as nn
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import CosineAnnealingLR
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, get_cosine_schedule_with_warmup
 
 import wandb
 
 from mistral_inference.args import TransformerArgs, TokenformerArgs
 from mistral_inference.transformer import Transformer
-from dataloader import OpenWebTextDataLoader
+from dataloader import StreamingTextDataLoader
 from evaluate import (
     eval_hellaswag,
     eval_pile_perplexity,
@@ -55,12 +54,24 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default="configs/mixtral_tokenformer.json")
     parser.add_argument("--lr", type=float, default=3e-4)
+    parser.add_argument("--warmup_ratio", type=float, default=0.03,
+                        help="Fraction of optimizer updates spent in LR warmup")
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--max_steps", type=int, default=10_000)
     parser.add_argument("--grad_accum_steps", type=int, default=8)
     parser.add_argument("--save_dir", type=str, default="checkpoints")
     parser.add_argument("--wandb_project", type=str, default="mixtral-tokenformer")
-    parser.add_argument("--data_dir", type=str, default="data/owt")
+    parser.add_argument("--datasets", nargs="+", default=["Skylion007/openwebtext"],
+                        help="HuggingFace dataset(s) streamed and interleaved for training")
+    parser.add_argument("--mix_probs", nargs="+", type=float, default=None,
+                        help="Interleave probabilities per dataset (must match --datasets; "
+                             "normalized automatically). Default: equal weights.")
+    parser.add_argument("--shuffle_buffer", type=int, default=10_000,
+                        help="Reservoir buffer size for on-the-fly shuffling of the train stream")
+    parser.add_argument("--val_docs", type=int, default=2_000,
+                        help="Documents reserved (and skipped by train) for the held-out val split")
+    parser.add_argument("--data_seed", type=int, default=42,
+                        help="Seed for the streaming shuffle")
     parser.add_argument("--seq_len", type=int, default=512)
     parser.add_argument("--no-tokenformer", dest="no_tokenformer", action="store_true",
                         help="Disable tokenformer even if present in config")
@@ -145,10 +156,28 @@ def main():
             json.dump(eval_log, f, indent=2)
 
     optimizer = AdamW(model.parameters(), lr=cfg.lr, betas=(0.9, 0.95), weight_decay=0.1)
-    scheduler = CosineAnnealingLR(optimizer, T_max=cfg.max_steps)
+    # The scheduler advances once per optimizer update (every grad_accum_steps
+    # micro-steps), so its horizon must be measured in optimizer updates, not
+    # raw micro-steps — otherwise the cosine barely moves and the LR stays flat.
+    num_updates = cfg.max_steps // cfg.grad_accum_steps
+    scheduler = get_cosine_schedule_with_warmup(
+        optimizer,
+        num_warmup_steps=int(cfg.warmup_ratio * num_updates),
+        num_training_steps=num_updates,
+    )
 
-    train_loader = OpenWebTextDataLoader("train", cfg.data_dir, cfg.seq_len, cfg.batch_size, device)
-    val_loader = OpenWebTextDataLoader("val", cfg.data_dir, cfg.seq_len, cfg.batch_size, device)
+    if cfg.mix_probs is not None and len(cfg.mix_probs) != len(cfg.datasets):
+        parser.error("--mix_probs must have one value per --datasets entry")
+    loader_kwargs = dict(
+        dataset_names=cfg.datasets,
+        mix_probs=cfg.mix_probs,
+        tokenizer_name=cfg.tokenizer,
+        shuffle_buffer=cfg.shuffle_buffer,
+        val_docs=cfg.val_docs,
+        seed=cfg.data_seed,
+    )
+    train_loader = StreamingTextDataLoader("train", cfg.seq_len, cfg.batch_size, device, **loader_kwargs)
+    val_loader = StreamingTextDataLoader("val", cfg.seq_len, cfg.batch_size, device, **loader_kwargs)
 
     save_dir = Path(cfg.save_dir)
     save_dir.mkdir(exist_ok=True)

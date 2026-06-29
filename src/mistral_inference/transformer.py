@@ -9,6 +9,8 @@ import safetensors.torch
 import torch
 from torch import nn
 
+from xformers.ops.fmha.attn_bias import BlockDiagonalCausalMask
+
 from mistral_inference.args import PATCH_MERGE, TransformerArgs
 from mistral_inference.cache import BufferCache, CacheInputMetadata
 from mistral_inference.lora import LoRALoaderMixin
@@ -180,8 +182,16 @@ class Transformer(ModelBase, LoRALoaderMixin):
 
         if cache is not None:
             input_metadata = cache.get_input_metadata(seqlens)
+            # The cache path supplies its own (causal, sliding-window) mask via
+            # cache.mask; no separate mask is plumbed through the layers.
+            mask: Optional[BlockDiagonalCausalMask] = None
         else:
             input_metadata = [SimpleInputMetadata.from_seqlens(seqlens, self.device) for _ in range(len(self.layers))]
+            # No cache (training / packed teacher-forcing): build the causal,
+            # per-sequence block-diagonal mask explicitly. Without this, attention
+            # is fully bidirectional and leaks future tokens, so the model would
+            # train on a non-causal objective that doesn't match autoregressive eval.
+            mask = BlockDiagonalCausalMask.from_seqlens(seqlens)
 
         if self.pipeline_rank == 0:
             assert self.tok_embeddings is not None
@@ -204,7 +214,7 @@ class Transformer(ModelBase, LoRALoaderMixin):
                 cache_view = cache.get_view(local_layer_id, cache_metadata)
             else:
                 cache_view = None
-            h = layer(h, freqs_cis, cache_view)
+            h = layer(h, freqs_cis, cache_view, mask)
 
         if cache is not None:
             cache.update_seqlens(seqlens)

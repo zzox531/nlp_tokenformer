@@ -135,9 +135,12 @@ def eval_pile_perplexity(
     seq_len: int = 512,
     max_tokens: int = 2_000_000,
     data_dir: Optional[str] = None,
-    pile_dataset: str = "EleutherAI/the_pile_deduplicated",
+    pile_dataset: str = "monology/pile-uncopyrighted",
 ) -> float:
-    # Gather a flat stream of up to `max_tokens` token ids.
+    # Gather a flat stream of up to `max_tokens` token ids.  Documents are
+    # tokenized exactly as in training — BOS-prefixed and EOS-separated, i.e.
+    # [BOS, doc, EOS, BOS, doc, EOS, ...] — so the eval distribution matches the
+    # packing the model actually saw.
     if data_dir is not None:
         path = Path(data_dir) / "val.bin"
         if not path.exists():
@@ -151,15 +154,20 @@ def eval_pile_perplexity(
         eos = tokenizer.eos_token_id
         buf: List[int] = []
         for ex in stream:
-            buf.extend(tokenizer.encode(ex["text"], add_special_tokens=False))
+            buf.extend(tokenizer.encode(ex["text"]))  # adds BOS
             buf.append(eos)
             if len(buf) >= max_tokens:
                 break
         tokens = np.asarray(buf[:max_tokens], dtype=np.int64)
 
-    # Non-overlapping windows; each is scored as an independent sequence.
+    # Non-overlapping windows, each scored as an independent sequence.  Every
+    # window is prefixed with BOS so the first scored prediction is
+    # P(token | BOS) — the document-start convention the model trains on —
+    # rather than conditioning on an arbitrary mid-document token.  The BOS is
+    # context only; it is not itself a scored target.
+    bos = tokenizer.bos_token_id
     windows = [
-        tokens[i : i + seq_len].tolist()
+        [bos] + tokens[i : i + seq_len].tolist()
         for i in range(0, len(tokens) - 1, seq_len)
     ]
     windows = [w for w in windows if len(w) >= 2]
@@ -307,7 +315,7 @@ def main():
     parser.add_argument("--pile_max_tokens", type=int, default=2_000_000)
     parser.add_argument("--pile_data_dir", type=str, default=None,
                         help="Directory with a pre-tokenised val.bin (else stream from HF)")
-    parser.add_argument("--pile_dataset", type=str, default="EleutherAI/the_pile_deduplicated")
+    parser.add_argument("--pile_dataset", type=str, default="monology/pile-uncopyrighted")
     parser.add_argument("--output", type=str, default=None, help="Write results JSON here")
     cfg = parser.parse_args()
 

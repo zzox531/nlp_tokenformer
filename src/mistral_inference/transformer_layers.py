@@ -167,15 +167,37 @@ class TransformerBlock(nn.Module):
         self.attention_norm = RMSNorm(dim, eps=norm_eps)
         self.ffn_norm = RMSNorm(dim, eps=norm_eps)
 
+        # self.feed_forward: nn.Module
+        # if moe is not None and tokenformer is None:
+        #     self.feed_forward = MoeLayer(
+        #         experts=[FeedForward(dim=dim, hidden_dim=hidden_dim, lora=lora) for _ in range(moe.num_experts)],
+        #         gate=nn.Linear(dim, moe.num_experts, bias=False),
+        #         moe_args=moe,
+        #     )
+        # else:
+        #     self.feed_forward = FeedForward(dim=dim, hidden_dim=hidden_dim, lora=lora, tokenformer=tokenformer)
         self.feed_forward: nn.Module
-        if moe is not None and tokenformer is None:
+        if moe is not None and tokenformer is not None:
+            # MoE with Tokenformer experts
+            self.feed_forward = MoeLayer(
+                experts=[FeedForward(dim=dim, hidden_dim=hidden_dim, tokenformer=tokenformer) for _ in range(moe.num_experts)],
+                gate=nn.Linear(dim, moe.num_experts, bias=False),
+                moe_args=moe,
+            )
+        elif moe is not None and tokenformer is None:
+            # MoE with standard (or LoRA) experts
             self.feed_forward = MoeLayer(
                 experts=[FeedForward(dim=dim, hidden_dim=hidden_dim, lora=lora) for _ in range(moe.num_experts)],
                 gate=nn.Linear(dim, moe.num_experts, bias=False),
                 moe_args=moe,
             )
+        elif moe is None and tokenformer is not None:
+            # Single Tokenformer FFN
+            self.feed_forward = FeedForward(dim=dim, hidden_dim=hidden_dim, tokenformer=tokenformer)
         else:
-            self.feed_forward = FeedForward(dim=dim, hidden_dim=hidden_dim, lora=lora, tokenformer=tokenformer)
+            # Single standard (or LoRA) FFN
+            self.feed_forward = FeedForward(dim=dim, hidden_dim=hidden_dim, lora=lora)
+
 
     def forward(
         self,

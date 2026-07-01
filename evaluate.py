@@ -275,8 +275,37 @@ def eval_winogrande(
     correct = sum(int(np.argmax(sc)) == ex["label"] for ex, sc in zip(examples, scores))
     return correct / len(examples)
 
+def eval_piqa(
+    model: Transformer,
+    device: torch.device,
+    tokenizer,
+    batch_size: int = 16,
+    max_samples: Optional[int] = None,
+) -> float:
+    from datasets import load_dataset
 
-TASK_NAMES = ["pile", "hellaswag", "winogrande"]
+    ds = load_dataset(
+        "nthngdy/piqa", split="validation"
+    )
+    if max_samples is not None:
+        ds = ds.select(range(min(max_samples, len(ds))))
+
+    examples = []
+    for row in ds:
+        examples.append({
+            "context":       row["goal"],
+            "continuations": [row["sol1"], row["sol2"]],
+            "label":         int(row["label"]),
+        })
+
+    return _eval_multiple_choice(
+        model, device, tokenizer,
+        examples, batch_size,
+        normalize=True,
+        desc="piqa",
+    )
+
+TASK_NAMES = ["pile", "hellaswag", "winogrande", "piqa"]
 
 
 # --------------------------------------------------------------------------- #
@@ -341,6 +370,10 @@ def main():
         if "winogrande" in cfg.tasks:
             results["winogrande_accuracy"] = eval_winogrande(
                 model, device, tokenizer, cfg.batch_size, cfg.max_samples)
+        if "piqa" in cfg.tasks:
+            results["piqa_accuracy"] = eval_piqa(
+                model, device, tokenizer, cfg.batch_size, cfg.max_samples
+            )
 
     print("\n=== Results ===")
     for k, v in results.items():

@@ -16,15 +16,16 @@ The central question: **can pattention-based parameter tokenization and MoE rout
 
 ## Main Objective
 
-Implement a MoE-augmented Tokenformer and compare it against two baselines:
+Implement a MoE-augmented Tokenformer and compare it against three baselines:
 
 | Model | MoE | Pattention |
 |---|---|---|
+| Transformer | No | No |
 | Transformer + MoE | Yes | No |
 | Tokenformer | No | Yes |
 | **Tokenformer + MoE (ours)** | **Yes** | **Yes** |
 
-All three models are trained from scratch under identical setups.
+All four models are trained from scratch under identical setups.
 
 ## Dataset
 

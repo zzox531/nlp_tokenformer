@@ -154,6 +154,7 @@ With this idea, scaling can be done by simply concatenating new parameter tokens
 %\clearpage
 
 \section{Experiments}
+\label{sec:experiments}
 
 We trained four setups:
 \begin{itemize}
@@ -232,12 +233,127 @@ Previous works have introduced ways of modifying the Transformer architecture, t
 
 
 
-% \clearpage
+\clearpage
 
-% \section{Appendix}
+\appendix
 
-% [TODO]
+\section{Training setup}
+\label{app:training}
 
+This appendix documents the exact configuration used to train the four models
+compared in Section~\ref{sec:experiments} (Experiments). All four setups share the
+same backbone dimensions, tokenizer, dataset mixture and optimization schedule;
+they differ only in whether the FFN blocks are replaced by MoE, and whether the
+linear projections are replaced by pattention layers.
+
+\subsection{Model architecture}
+
+The two non-MoE models (Transformer, Tokenformer) have roughly $124$M parameters,
+and the two MoE models (Transformer~+~MoE, Tokenformer~+~MoE) have roughly $294$M
+parameters. The shared backbone hyperparameters are listed in Table~\ref{tab:arch},
+with the MoE- and Tokenformer-specific hyperparameters in Table~\ref{tab:arch_extra}.
+
+\begin{table}[h]
+    \centering
+    \begin{tabular}{|l|c|}
+        \hline
+        Hyperparameter & Value \\
+        \hline\hline
+        Model dimension ($d_\text{model}$) & 768 \\
+        \hline
+        Number of layers & 12 \\
+        \hline
+        Number of attention heads & 12 \\
+        \hline
+        Number of KV heads (GQA) & 4 \\
+        \hline
+        Head dimension & 64 \\
+        \hline
+        FFN / expert hidden dimension & 2048 \\
+        \hline
+        Vocabulary size & 32000 \\
+        \hline
+        RMSNorm $\varepsilon$ & $10^{-5}$ \\
+        \hline
+        RoPE $\theta$ & $10^{6}$ \\
+        \hline
+    \end{tabular}
+    \caption{Shared backbone architecture hyperparameters (all four setups).}
+    \label{tab:arch}
+\end{table}
+
+\begin{table}[h]
+    \centering
+    \begin{tabular}{|l|c|}
+        \hline
+        Hyperparameter & Value \\
+        \hline\hline
+        MoE experts & 4 \\
+        \hline
+        MoE experts per token (top-$K$) & 2 \\
+        \hline
+        Pattention QKV slots ($n$) & 307 \\
+        \hline
+        Pattention FFN slots ($n$) & 3072 \\
+        \hline
+        Pattention normalization & \texttt{l2\_norm\_gelu} ($\Theta$) \\
+        \hline
+    \end{tabular}
+    \caption{MoE-specific hyperparameters (used by the two MoE setups) and
+    Tokenformer/pattention-specific hyperparameters (used by the two Tokenformer
+    setups).}
+    \label{tab:arch_extra}
+\end{table}
+
+\subsection{Optimization and data}
+
+The training data is a $50\%$/$50\%$ interleaved mixture of OpenWebText
+(\texttt{Skylion007/openwebtext}) and the uncopyrighted Pile
+(\texttt{monology/pile-uncopyrighted}), streamed on the fly with a reservoir
+shuffle buffer of $10{,}000$ documents and $2{,}000$ documents held out for
+validation (data seed $42$). Tokenization uses the
+\texttt{mistralai/Mistral-7B-v0.1} tokenizer, and all models are trained with a
+sequence length of $1024$ in \texttt{bfloat16}.
+
+Optimization uses AdamW ($\beta_1 = 0.9$, $\beta_2 = 0.95$, weight decay $0.1$)
+with a peak learning rate of $6 \times 10^{-4}$, a cosine decay schedule, a warmup
+ratio of $0.02$ (of the total number of optimizer updates), and gradient clipping
+to a global norm of $1.0$. The per-model micro-batch size, gradient accumulation
+and resulting effective batch size are given in Table~\ref{tab:train}. The MoE
+setups use a smaller micro-batch to fit in memory. Every job was run with a cap of
+$100{,}000$ steps and a wall-clock budget of $7$ hours, whichever came first, on a
+single NVIDIA A100 GPU (48\,GB of allocated system memory). Benchmarks
+(Pile perplexity and HellaSwag) were evaluated every $2000$ steps on up to $500$
+samples per benchmark.
+
+\begin{table}[h]
+    \centering
+    \begin{tabular}{|l|c|c|c|}
+        \hline
+        Setup & Micro-batch & Grad.\ accum. & Effective batch \\
+        \hline\hline
+        Transformer          & 32 & 8  & 256 \\
+        \hline
+        Transformer + MoE    & 24 & 10 & 240 \\
+        \hline
+        Tokenformer          & 32 & 8  & 256 \\
+        \hline
+        Tokenformer + MoE    & 24 & 10 & 240 \\
+        \hline
+    \end{tabular}
+    \caption{Per-setup batching. Effective batch is measured in sequences
+    (micro-batch $\times$ gradient accumulation); each sequence contains 1024
+    tokens.}
+    \label{tab:train}
+\end{table}
+
+\subsection{Software environment}
+
+The models were implemented on top of a modified \texttt{mistral-inference}
+codebase and trained with Python 3.12, PyTorch 2.6.0 (CUDA 12.4), \texttt{xformers},
+and \texttt{transformers} $\geq 4.40$.
+
+\noindent The whole code is available under link: \href{https://github.com/zzox531/nlp_tokenformer}{https://github.com/zzox531/nlp\_tokenformer}
 
 
 

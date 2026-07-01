@@ -1,5 +1,4 @@
 import json
-import time
 import argparse
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -60,8 +59,6 @@ def main():
                         help="Fraction of optimizer updates spent in LR warmup")
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--max_steps", type=int, default=10_000)
-    parser.add_argument("--max_hours", type=float, default=11.5,
-                        help="Wall-clock budget: save checkpoint and stop after this many hours")
     parser.add_argument("--grad_accum_steps", type=int, default=8)
     parser.add_argument("--save_dir", type=str, default="checkpoints")
     parser.add_argument("--wandb_project", type=str, default="mixtral-tokenformer")
@@ -196,13 +193,8 @@ def main():
     model.train()
     optimizer.zero_grad()
 
-    t_start = time.time()
-    tokens_seen = 0
-    tokens_per_microstep = cfg.batch_size * cfg.seq_len
-
     for step in range(cfg.max_steps):
         inputs, targets = train_loader.get_batch()
-        tokens_seen += tokens_per_microstep
 
         # mistral_inference forward expects a flat (sum_seqlens,) input
         # and a list of per-sequence lengths
@@ -225,10 +217,6 @@ def main():
         if cfg.eval_interval > 0 and step % cfg.eval_interval == 0:
             run_eval(step)
 
-        if (time.time() - t_start) / 3600 >= cfg.max_hours:
-            print(f"[wall-clock] reached {cfg.max_hours}h at step {step}; saving checkpoint and stopping.")
-            break
-
         if step % 50 == 0:
             train_loss = loss.item() * cfg.grad_accum_steps
 
@@ -243,13 +231,8 @@ def main():
                 val_acc = (val_logits.argmax(-1) == val_flat_targets).float().mean().item()
             model.train()
 
-            elapsed = max(time.time() - t_start, 1e-6)
-            tok_s = tokens_seen / elapsed
-            wandb.log({"loss": train_loss, "val_loss": val_loss, "val_acc": val_acc,
-                       "lr": scheduler.get_last_lr()[0], "step": step,
-                       "tokens_seen": tokens_seen, "tokens_per_sec": tok_s, "elapsed_hours": elapsed/3600})
-            print(f"step {step:>6}  loss {train_loss:.4f}  val_loss {val_loss:.4f}  val_acc {val_acc:.4f}  "
-                  f"tok/s {tok_s:,.0f}  tokens {tokens_seen:,}  t {elapsed/3600:.2f}h")
+            wandb.log({"loss": train_loss, "val_loss": val_loss, "val_acc": val_acc, "lr": scheduler.get_last_lr()[0], "step": step})
+            print(f"step {step:>6}  loss {train_loss:.4f}  val_loss {val_loss:.4f}  val_acc {val_acc:.4f}")
 
     ckpt_path = save_dir / f"model_{"tokenformer" if args.tokenformer else "base"}.pt"
     torch.save({"step": step, "model_state_dict": model.state_dict(), "args": args}, ckpt_path)
